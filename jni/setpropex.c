@@ -233,7 +233,7 @@ static int setpropex(int init_pid, int argc, char *argv[])
     mapinfo *mi;
 
     if(argc != 3) {
-        fprintf(stderr, "usage: setpropex <key> <value>\n");
+        fprintf(stderr, "usage: setpropex <key> <value> [<lockfile>]\n");
         return 1;
     }
 
@@ -305,19 +305,56 @@ error2:
     return 1;
 }
 
+static int lock_file(char* filename) {
+    int fd = open(filename, O_CREAT | O_RDONLY, 0644);
+    if (fd < 0) {
+        LOGE("open failed!");
+        return 1;
+    }
+    if (flock(fd, LOCK_EX) != 0) {
+        LOGE("lock failed!");
+        close(fd);
+        return 1;
+    }
+    return fd;
+}
+
+static void unlock_file(int fd) {
+    flock(fd, LOCK_UN);
+    close(fd);
+}
 
 int main(int argc, char** argv)
 {
     int init_pid = 1; //TODO: find init process
 
-    if(ptrace(PTRACE_ATTACH, init_pid, NULL, NULL) == -1) {
-        LOGE("ptrace error: failed to attach to %d, %s", init_pid, strerror(errno));
-        return 1;
+    int lock = -1;
+    if (argc == 4) {
+        lock = lock_file(argv[3]);
+        argc = 3;
+    }
+
+    // we need this even with locking, if called rapidly
+    for (int i = 127; i >= 0; i--) {
+        if (ptrace(PTRACE_ATTACH, init_pid, NULL, NULL) == -1) {
+            if (i == 0) {
+                LOGE("ptrace error: failed to attach to %d, %s", init_pid, strerror(errno));
+                return 1;
+            } else {
+                usleep(1000);
+            }
+        } else {
+            break;
+        }
     }
 
     int ret = setpropex(init_pid, argc, argv);
 
     ptrace(PTRACE_DETACH, 1, NULL, NULL);
+    kill(init_pid, SIGCONT);
+    kill(init_pid, SIGCONT); // yes, twice
+
+    if (lock >= 0) unlock_file(lock);
 
     return ret;
 }
